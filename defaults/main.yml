@@ -1,0 +1,26 @@
+---
+# defaults file for barman-restore
+barman_home: /var/lib/barman
+barman_user_ssh_key: "{{ barman_home }}/.ssh/id_ed25519"
+
+postgresql_version: 11
+
+barman_restore_local_postgres_dump: "/var/lib/barman/postgresql/{{ postgresql_version }}/main"
+
+barman_restore_source_db: coo_production
+barman_restore_latest_dump_symlink: "/root/odoo_prod_latest.pgc"
+barman_restore_latest_dump_symlinks: 
+  - "/root/last_db_backup.pgc"
+  - "/var/lib/barman/odoo_prod_latest.pgc"
+  - "/root/odoo_prod_latest.pgc"
+# Check format in barman docs
+barman_restore_pitr_date: immediate
+
+# if immediate, name as current date and time, else as barman_restore_pitr_date
+barman_restore_dated_dump_name: "{% if barman_restore_pitr_date == 'immediate' %}{{ barman_home }}/barman_restore/{{ ansible_date_time.date }}_{{ ansible_date_time.hour }}_{{ ansible_date_time.minute }}.pgc{% else %}{{ barman_home }}/barman_restore/{{ barman_restore_pitr_date | regex_replace('[ :]', '_') }}.pgc{% endif %}"
+
+barman_restore_db_dump_folder: "{{ barman_home }}/barman_restore"
+
+
+barman_odoo_random_uuid: yes
+barman_purge_odoo_assets: no

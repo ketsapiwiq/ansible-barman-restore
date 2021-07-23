@@ -1,0 +1,98 @@
+# PITR: Point-in-time recovery
+# Only restore a db 
+
+- name: Create barman_restore folder
+  file:
+    path: "{{ barman_restore_db_dump_folder }}"
+    state: directory
+    # owner: postgres
+    # group: postgres
+  tags: dump_database
+
+- name: Find all backups
+  find:
+    paths: "{{ barman_restore_db_dump_folder }}"
+    file_type: file
+  check_mode: false
+  register: backups_too_old
+
+- name: remove oldest but first 3 newest
+  file:
+    path: "{{ item.path }}" 
+    state: absent
+  with_items: "{{ (backups_too_old.files | sort(attribute='ctime'))[:-3] | list }}"
+
+# Ces 2 prochaines tasks sont spécifiques à Odoo
+# TODO: réorganiser ça niveau rôles et playbooks?
+
+# UUID
+
+- name: Change UUID if enabled
+  postgresql_query:
+    query: UPDATE ir_config_parameter SET value = '{{ 1000000000 | random | to_uuid }}' WHERE key = 'database.uuid';
+    db: "{{ barman_restore_source_db }}"
+  when: barman_odoo_random_uuid | bool == True
+  tags: barman_odoo_random_uuid
+  become: yes
+
+
+# ASSETS
+
+# https://gitlab.com/coopaname/odoo-infra/-/issues/35#note_499979003
+# https://medium.com/@reedrehg/odoo-images-and-attachments-explaining-and-regenerating-assets-d1eb7fe8a3ed
+- name: Purge cache of assets in database
+  postgresql_query:
+    query: "DELETE FROM ir_attachment WHERE res_model='ir.ui.view' AND name LIKE '%assets_%';"
+    db: "{{ barman_restore_source_db }}"
+#   ignore_errors: ansible_check_mode
+  tags: ["barman_purge_odoo_assets"]
+  when: barman_purge_odoo_assets | bool == True
+  become: yes
+
+
+- name: "Dump latest version of db to {{ barman_restore_source_host }}:{{ barman_restore_dated_dump_name }}"
+  postgresql_db:
+    name: "{{ barman_restore_source_db }}"
+    encoding: UTF-8
+    lc_collate: fr_FR.UTF-8
+    lc_ctype: fr_FR.UTF-8
+    state: dump
+    target_opts: '--format=custom'
+    target: "{{ barman_restore_dated_dump_name }}"
+  async: 3600 # wait for completion 60min
+  poll: 15 # poll for completion every 15s
+  when:
+  - not ansible_check_mode
+  become: yes
+  tags: dump_database
+
+- name: "Make dump available for barman user"
+  file:
+   path: "{{ barman_restore_dated_dump_name }}"
+   owner: barman
+   group: barman
+  ignore_errors: "{{ ansible_check_mode }}"
+  become: yes
+
+- name: 'Create symlink to db for latest'
+  file:
+    state: link
+    path: "{{ barman_restore_latest_dump_symlink }}"
+    src: "{{ barman_restore_dated_dump_name }}"
+# Force the creation of the symlinks in two cases: the source file does not exist (but will appear later); the destination exists and is a file (so, we need to unlink the path file and create symlink to the src file in place of it).
+#   force: yes
+  ignore_errors: "{{ ansible_check_mode }}"
+  become: yes
+  tags: dump_database,create_db_symlinks
+
+- name: 'Create additional symlinks to db for latest'
+  file:
+    state: link
+    path: "{{ item }}"
+    src: "{{ barman_restore_dated_dump_name }}"
+  with_items: "{{ barman_restore_latest_dump_symlinks }}"
+# Force the creation of the symlinks in two cases: the source file does not exist (but will appear later); the destination exists and is a file (so, we need to unlink the path file and create symlink to the src file in place of it).
+#   force: yes
+  ignore_errors: "{{ ansible_check_mode }}"
+  become: yes
+  tags: dump_database,create_db_symlinks

@@ -1,0 +1,84 @@
+
+# TODO: What's the cleanest way to install postgres on db-backup from Ansible's point of view?
+# - name: "Install postgres through role"
+#   import_role:
+#     name: anxs.postgresql
+#   tags: setup_postgres
+
+- name: "Stop postgres on {{ barman_restore_source_host }}"
+  service: 
+    name: "postgresql@{{ postgresql_version }}-main"
+    state: stopped
+  become: yes
+  tags: stop_postgres,copy_postgres_data
+
+- name: Make barman own postgres data
+  file:
+    # name: "/var/lib/postgresql/11/main"
+    name: "{{ barman_restore_local_postgres_dump }}"
+    owner: barman
+    recurse: yes
+  become: yes
+
+- name: "Finish current WAL file streaming for immediate Point-in-Time Recovery"
+  command: "barman switch-wal odoo_prod_streaming_config"
+  when:
+  - barman_restore_pitr_date == 'immediate'
+  become: yes
+  tags: barman_close_wal
+
+# - name: Find backup before target date
+#   find:
+#     paths: "{{ barman_restore_db_dump_folder }}"
+#     file_type: file
+#   check_mode: false
+#   register: backups_too_old
+
+# Note: --target-immediate doesn't actually recover latest copy but latest base backup (without changes in between)
+- name: "Recreate immediate backup locally using Point-in-Time Recovery directly in local postgres folder"
+  command: "barman recover odoo_prod_streaming_config latest {{ barman_restore_local_postgres_dump }}  --target-time={{ ansible_date_time.iso8601 }}"
+  async: 3600 # wait for completion 1h
+  poll: 15 # poll for completion every 15s
+  register: barman_recover_output
+  failed_when: "'successfully prepared for recovery' not in barman_recover_output.stdout"
+  when:
+  - barman_restore_pitr_date == 'immediate'
+  - not ansible_check_mode
+  become: yes
+  tags: barman_recover_locally
+
+- name: "Recreate {{ barman_restore_pitr_date }} backup locally using Point-in-Time Recovery directly in local postgres folder"
+  command: "barman recover odoo_prod_streaming_config oldest {{ barman_restore_local_postgres_dump }} --target-time={{ barman_restore_pitr_date }}"
+  async: 3600 # wait for completion 1h
+  poll: 15 # poll for completion every 15s
+  register: barman_recover_output
+  failed_when: "'successfully prepared for recovery' not in barman_recover_output.stdout"
+  when:
+  - barman_restore_pitr_date != 'immediate'
+  - not ansible_check_mode
+  become: yes
+  tags: barman_recover_locally
+
+- name: Own postgres data by postgres
+  file:
+    name: "{{ barman_restore_local_postgres_dump }}"
+    owner: postgres
+    group: postgres
+    recurse: yes
+  become: yes
+  tags: copy_postgres_data
+
+- name: "Start postgres on {{ barman_restore_source_host }}"
+  service: 
+    name: "postgresql@{{ postgresql_version }}-main"
+    state: restarted
+  become: yes
+  tags: restart_postgres,copy_postgres_data
+
+
+- name: Wait for database to be available
+  shell: 'psql --command "SELECT version()" --dbname {{ barman_restore_source_db }} --username postgres --port 5432 -P pager || true'
+  register: barman_db_result
+  until: barman_db_result.stderr.find("se lance") == -1
+  retries: 30
+  delay: 5

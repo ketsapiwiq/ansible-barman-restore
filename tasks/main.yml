@@ -1,0 +1,8 @@
+---
+# tasks file for ansible-role-barman-restore
+
+- include: restore_local_postgres.yml
+  tags: [barman_restore, restore_local_postgres]
+
+- include: create_dump.yml
+  tags: [barman_restore, create_dump]
